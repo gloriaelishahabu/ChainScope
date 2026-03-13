@@ -1,0 +1,717 @@
+================================================================================
+  CHAINSCOPE — OPEN CONTRIBUTOR ISSUES
+  v0.1.0-beta
+  Last updated: 2024-12-01
+================================================================================
+
+This file documents known bugs, missing features, and improvement opportunities
+in ChainScope. Issues are ordered roughly by category. Each has a complexity tag:
+
+  [Trivial]  — Small, self-contained fix. Good for first-time contributors.
+  [Medium]   — Requires understanding of one system. 2–4 hours of work.
+  [High]     — Architectural or cross-cutting. Plan before implementing.
+
+Want to work on an issue? Comment on the corresponding GitHub Issue and
+open a PR referencing it. See CONTRIBUTING.md for guidelines.
+
+================================================================================
+
+
+────────────────────────────────────────────────────────────────────────────────
+ISSUE #1 — [Bug] Transaction dates display as 1970 due to incorrect timestamp parsing
+────────────────────────────────────────────────────────────────────────────────
+Complexity: Trivial
+File:       frontend/src/components/TransactionTable.jsx
+Function:   TxRow component, line ~35
+
+DESCRIPTION:
+  Transaction rows display dates like "1/1/1970" instead of the actual
+  transaction date. This affects every row in the transaction history table.
+
+CURRENT BEHAVIOR:
+  const date = new Date(tx.timeStamp).toLocaleDateString();
+  // tx.timeStamp is a string like "1698765432" (Unix seconds)
+  // new Date("1698765432") interprets it as a small millisecond value → 1970
+
+EXPECTED BEHAVIOR:
+  Dates should display correctly, e.g. "10/31/2023"
+
+ROOT CAUSE:
+  Etherscan returns timeStamp as a Unix epoch in seconds (string).
+  JavaScript's Date constructor expects milliseconds. The value must be
+  multiplied by 1000 before being passed to new Date().
+
+SUGGESTED FIX:
+  Replace:
+    const date = new Date(tx.timeStamp).toLocaleDateString();
+  With:
+    const date = new Date(parseInt(tx.timeStamp) * 1000).toLocaleDateString();
+
+  Also consider using date-fns (already installed) for better formatting:
+    import { format } from 'date-fns';
+    const date = format(new Date(parseInt(tx.timeStamp) * 1000), 'MMM d, yyyy');
+
+NOTES:
+  The same bug exists in TokenTransfers.jsx if timestamps are ever rendered there.
+
+
+────────────────────────────────────────────────────────────────────────────────
+ISSUE #2 — [Bug] All transactions shown as "Failed" due to wrong isError check
+────────────────────────────────────────────────────────────────────────────────
+Complexity: Trivial
+File:       frontend/src/components/TransactionTable.jsx
+Function:   StatusBadge component
+
+DESCRIPTION:
+  Every transaction in the history table shows a red "Failed" badge, even
+  successful transactions. This makes the status column useless and misleading.
+
+CURRENT BEHAVIOR:
+  <StatusBadge isError={tx.isError} />
+  // isError="0" (success) is a truthy string in JavaScript → renders "Failed"
+  // isError="1" (failed) is also truthy → also renders "Failed"
+
+EXPECTED BEHAVIOR:
+  Successful transactions show a green "Success" badge.
+  Failed transactions show a red "Failed" badge.
+
+ROOT CAUSE:
+  Etherscan returns isError as the string "0" (success) or "1" (failure).
+  In JavaScript, the string "0" is truthy, so the ternary always takes
+  the "failed" branch.
+
+SUGGESTED FIX:
+  When passing the prop:
+    Replace: isError={tx.isError}
+    With:    isError={tx.isError === '1'}
+
+  Or inside StatusBadge:
+    Replace: isError ? 'bg-red-...' : 'bg-emerald-...'
+    With:    (isError === '1' || isError === true) ? ...
+
+
+────────────────────────────────────────────────────────────────────────────────
+ISSUE #3 — [Bug] Gas values displayed as Wei instead of Gwei on Dashboard
+────────────────────────────────────────────────────────────────────────────────
+Complexity: Trivial
+File:       backend/services/blockchainService.js — getGasPrice()
+            frontend/src/components/Dashboard.jsx — StatCard gas display
+
+DESCRIPTION:
+  The Dashboard's "Safe Gas" and "Fast Gas" stat cards show values in the
+  wrong unit when the gas source is eth_gasPrice (Wei) rather than the
+  gasoracle endpoint (already in Gwei). This causes confusion because the
+  same UI shows wildly different magnitudes depending on which API responds.
+
+CURRENT BEHAVIOR:
+  Values like "24000000000" are shown instead of "24 Gwei"
+
+EXPECTED BEHAVIOR:
+  All gas prices shown in Gwei with unit label.
+
+ROOT CAUSE:
+  Inconsistency in blockchainService: getGasPrice() calls the gasoracle
+  endpoint (returns Gwei strings) but other code paths use eth_gasPrice
+  (returns Wei as hex). The frontend assumes all values are already in Gwei.
+
+SUGGESTED FIX:
+  1. Normalize all gas values to Gwei in blockchainService before returning.
+  2. Add a utility function in frontend/src/utils/format.js:
+       export function weiToGwei(wei) {
+         return (BigInt(wei) / BigInt(1e9)).toString();
+       }
+  3. Apply it in Dashboard.jsx before rendering.
+
+
+────────────────────────────────────────────────────────────────────────────────
+ISSUE #4 — [Feature] Add pagination to transaction history table
+────────────────────────────────────────────────────────────────────────────────
+Complexity: Medium
+File:       frontend/src/components/TransactionTable.jsx
+            backend/routes/wallet.js
+            backend/services/blockchainService.js — getWalletTransactions()
+
+DESCRIPTION:
+  The transaction table loads 20 transactions and stops. There are no
+  "Previous / Next" controls. For active wallets with thousands of transactions,
+  this makes the table nearly useless.
+
+CURRENT BEHAVIOR:
+  Hardcoded offset of 20 in getWalletTransactions(); no page controls in UI.
+
+EXPECTED BEHAVIOR:
+  - "Previous" and "Next" page buttons below the table
+  - Current page indicator (e.g. "Page 2")
+  - Page size selector (20 / 50 / 100)
+
+SUGGESTED FIX:
+  Backend (blockchainService.js):
+    Change hardcoded `offset: 20` to use the `offset` function parameter.
+    The function signature already accepts it but ignores it.
+
+  Backend (routes/wallet.js):
+    Forward `page` and `offset` query params to getWalletTransactions().
+
+  Frontend (TransactionTable.jsx):
+    - Add state: const [page, setPage] = useState(1);
+    - Pass page to fetchWallet(): fetchWallet(targetWallet, page)
+    - Add pagination UI (commented-out skeleton already exists in file)
+    - Reload on page change via useEffect dependency on `page`
+
+NOTES:
+  Etherscan's txlist supports page + offset natively. No custom logic needed.
+
+
+────────────────────────────────────────────────────────────────────────────────
+ISSUE #5 — [Bug] Ethereum address validation accepts non-addresses
+────────────────────────────────────────────────────────────────────────────────
+Complexity: Trivial
+File:       frontend/src/components/WalletSearch.jsx — isValidAddress()
+            backend/routes/wallet.js — GET /:address
+
+DESCRIPTION:
+  The wallet search accepts any 42-character string as a valid address.
+  Garbage strings like "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA!!" pass
+  validation and are sent to the Etherscan API, which returns an obscure error.
+
+CURRENT BEHAVIOR:
+  function isValidAddress(address) {
+    return address.length === 42;  // Only checks length
+  }
+
+EXPECTED BEHAVIOR:
+  Invalid strings are rejected immediately with a clear error message.
+
+SUGGESTED FIX:
+  Frontend (WalletSearch.jsx):
+    Replace isValidAddress with:
+      function isValidAddress(address) {
+        return /^0x[a-fA-F0-9]{40}$/.test(address);
+      }
+    Error message: "Please enter a valid Ethereum address (0x followed by 40 hex characters)"
+
+  Backend (routes/wallet.js):
+    Add the same regex check before calling blockchainService:
+      const ETH_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+      if (!ETH_ADDRESS_RE.test(address)) {
+        return res.status(400).json({ error: 'Invalid Ethereum address format' });
+      }
+
+
+────────────────────────────────────────────────────────────────────────────────
+ISSUE #6 — [Bug] CopyButton stays "Copied!" permanently after clicking
+────────────────────────────────────────────────────────────────────────────────
+Complexity: Trivial
+File:       frontend/src/components/WalletSearch.jsx — CopyButton component
+
+DESCRIPTION:
+  Clicking the "Copy" button next to a wallet address changes the label to
+  "Copied!" and never resets back to "Copy". On a second click, the button
+  says "Copied!" before copying again, which is confusing.
+
+CURRENT BEHAVIOR:
+  const handleCopy = () => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    // No reset — stays "Copied!" forever
+  };
+
+EXPECTED BEHAVIOR:
+  After 2 seconds, the button text returns to "Copy".
+
+SUGGESTED FIX:
+  const handleCopy = () => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+NOTES:
+  Also add a visual confirmation (e.g. green color change) for accessibility.
+  The TODO comment is already in the file at the relevant line.
+
+
+────────────────────────────────────────────────────────────────────────────────
+ISSUE #7 — [Bug] Silent error handling in blockchainService causes crashes
+────────────────────────────────────────────────────────────────────────────────
+Complexity: Medium
+File:       backend/services/blockchainService.js — getGasPrice(), getLatestBlocks()
+
+DESCRIPTION:
+  getGasPrice() and getLatestBlocks() catch errors internally with
+  console.error() but return undefined instead of throwing. Callers in
+  analytics.js receive undefined and then crash with a TypeError when
+  trying to access properties, producing an unhandled 500 error with
+  no useful message.
+
+CURRENT BEHAVIOR:
+  } catch (err) {
+    console.error('getGasPrice error:', err.message);
+    // Returns undefined implicitly
+  }
+
+  // In analytics.js:
+  const gasData = await getGasPrice();
+  res.json({ gas: gasData.SafeGasPrice }); // TypeError: cannot read property of undefined
+
+EXPECTED BEHAVIOR:
+  Errors propagate cleanly so the route handler can return a structured
+  error response to the client.
+
+SUGGESTED FIX:
+  Option A (recommended): Remove try/catch from service functions and let
+  errors bubble up to route handlers which already have try/catch.
+
+  Option B: Re-throw after logging:
+    } catch (err) {
+      console.error('getGasPrice error:', err.message);
+      throw err;
+    }
+
+  Additionally, add null-checks in analytics.js before accessing nested
+  properties from the combined Promise.all result.
+
+
+────────────────────────────────────────────────────────────────────────────────
+ISSUE #8 — [Bug] API cache TTL is too short (10 seconds) — causes rate limiting
+────────────────────────────────────────────────────────────────────────────────
+Complexity: Trivial
+File:       backend/services/blockchainService.js — top of file
+
+DESCRIPTION:
+  The NodeCache is initialized with stdTTL: 10 (10 seconds). In development,
+  every browser refresh triggers new Etherscan API calls. The free Etherscan
+  tier allows 5 requests/second. With multiple cached endpoints, it's trivial
+  to exceed this limit, causing 429 errors across the whole dashboard.
+
+CURRENT BEHAVIOR:
+  const cache = new NodeCache({ stdTTL: 10 });
+
+EXPECTED BEHAVIOR:
+  Cache should survive a typical page refresh cycle. Recommended TTLs:
+    Gas price:         60 seconds
+    Block data:        30 seconds
+    Wallet tx list:   120 seconds
+
+SUGGESTED FIX:
+  Either use per-key TTL when calling cache.set():
+    cache.set(cacheKey, data, 60); // 60s for gas
+
+  Or define named constants at the top of blockchainService.js:
+    const TTL = { GAS: 60, BLOCKS: 30, WALLET: 120 };
+  And use them in each cache.set() call.
+
+  Also add handling for Etherscan 429 responses and log a warning.
+
+
+────────────────────────────────────────────────────────────────────────────────
+ISSUE #9 — [Feature] Implement real gas price history from block data
+────────────────────────────────────────────────────────────────────────────────
+Complexity: High
+File:       backend/routes/analytics.js — GET /gas-history
+            backend/services/blockchainService.js
+
+DESCRIPTION:
+  The "Gas Price Trend (24h)" chart on the Dashboard displays randomly generated
+  numbers on every page load. The data is meaningless and changes constantly.
+
+CURRENT BEHAVIOR:
+  const mockHistory = Array.from({ length: 24 }, (_, i) => ({
+    hour: i,
+    safeLow: Math.floor(Math.random() * 20 + 10),
+    ...
+  }));
+
+EXPECTED BEHAVIOR:
+  Chart shows actual historical gas prices sampled once per hour for the past 24 hours.
+
+SUGGESTED FIX:
+  Option A — Block sampling (free, slow):
+    Fetch the latest block number, then walk back ~300 blocks per hour
+    (Ethereum averages ~12s/block), fetching baseFeePerGas from each
+    "anchor" block. Aggregate into hourly buckets.
+
+  Option B — Etherscan gas oracle history (easier):
+    Use the Etherscan API:
+      ?module=gastracker&action=gasestimate
+    Repeatedly sampled and stored in a lightweight in-memory ring buffer
+    on the backend that gets populated on a 60s interval using setInterval().
+
+  Option C — Third-party API:
+    Integrate with Blocknative or Ethgas.watch for pre-aggregated history.
+
+  For Option B, start with a module-level array:
+    let gasRingBuffer = [];  // max 24 entries
+    setInterval(async () => {
+      const gas = await getGasPrice();
+      gasRingBuffer.push({ time: Date.now(), ...gas });
+      if (gasRingBuffer.length > 24) gasRingBuffer.shift();
+    }, 60 * 60 * 1000);
+
+
+────────────────────────────────────────────────────────────────────────────────
+ISSUE #10 — [Bug] /api/analytics/blocks count param has no upper bound
+────────────────────────────────────────────────────────────────────────────────
+Complexity: Trivial
+File:       backend/routes/analytics.js — GET /blocks
+
+DESCRIPTION:
+  The `count` query parameter is parsed and passed directly to getLatestBlocks()
+  without any validation. A user (or attacker) can pass count=10000, causing the
+  server to make 10,000 sequential Etherscan API calls and hang indefinitely.
+
+CURRENT BEHAVIOR:
+  const count = parseInt(req.query.count) || 10;
+  const blocks = await getLatestBlocks(count);
+
+EXPECTED BEHAVIOR:
+  count is capped at a reasonable maximum (e.g. 50).
+  Non-numeric or negative values default to 10.
+
+SUGGESTED FIX:
+  const raw = parseInt(req.query.count);
+  const count = (!isNaN(raw) && raw > 0) ? Math.min(raw, 50) : 10;
+
+  Also consider adding an input validation middleware (express-validator)
+  to keep route handlers clean.
+
+
+────────────────────────────────────────────────────────────────────────────────
+ISSUE #11 — [Feature] Add CSV export for transaction history
+────────────────────────────────────────────────────────────────────────────────
+Complexity: Medium
+File:       frontend/src/components/TransactionTable.jsx
+
+DESCRIPTION:
+  The "Export CSV" button in the transaction table is permanently disabled
+  with a "Coming soon" tooltip. Many users want to export tx history for
+  tax reporting or offline analysis.
+
+CURRENT BEHAVIOR:
+  <button disabled className="... cursor-not-allowed" title="Coming soon">
+    Export CSV
+  </button>
+
+EXPECTED BEHAVIOR:
+  Clicking "Export CSV" downloads a .csv file containing all currently
+  loaded transactions with columns: Hash, From, To, Value (ETH), Gas Used,
+  Status, Date.
+
+SUGGESTED FIX:
+  Add this function in TransactionTable.jsx:
+
+    function exportCsv(transactions) {
+      const headers = ['Hash', 'From', 'To', 'Value (ETH)', 'Gas Used', 'Status', 'Date'];
+      const rows = transactions.map(tx => [
+        tx.hash,
+        tx.from,
+        tx.to,
+        (parseInt(tx.value) / 1e18).toFixed(8),
+        tx.gasUsed,
+        tx.isError === '1' ? 'Failed' : 'Success',
+        new Date(parseInt(tx.timeStamp) * 1000).toISOString(),
+      ]);
+      const csv = [headers, ...rows].map(r => r.join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `chainscope-txns-${Date.now()}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+  Then wire up the button:
+    <button onClick={() => exportCsv(transactions)}>Export CSV</button>
+
+
+────────────────────────────────────────────────────────────────────────────────
+ISSUE #12 — [Bug] Top wallet bar chart clips data above hardcoded domain max
+────────────────────────────────────────────────────────────────────────────────
+Complexity: Trivial
+File:       frontend/src/components/Dashboard.jsx — Top Active Wallets BarChart
+
+DESCRIPTION:
+  The horizontal bar chart for top wallets uses a hardcoded XAxis domain of
+  [0, 15000]. If any wallet has more than 15,000 transactions, its bar is
+  clipped and the chart is misleading.
+
+CURRENT BEHAVIOR:
+  <XAxis type="number" domain={[0, 15000]} hide />
+
+EXPECTED BEHAVIOR:
+  The chart domain dynamically scales to the maximum value in the dataset.
+
+SUGGESTED FIX:
+  Replace the hardcoded domain with 'auto' or compute it:
+    const maxTx = Math.max(...topWallets.map(w => w.txCount), 0);
+    <XAxis type="number" domain={[0, maxTx * 1.1]} hide />
+
+  The * 1.1 adds 10% padding so the longest bar isn't flush against the edge.
+
+
+────────────────────────────────────────────────────────────────────────────────
+ISSUE #13 — [Bug] All API errors return HTTP 500 regardless of error type
+────────────────────────────────────────────────────────────────────────────────
+Complexity: Medium
+File:       backend/routes/analytics.js, backend/routes/wallet.js
+
+DESCRIPTION:
+  Every caught error in route handlers returns res.status(500). This conflates
+  upstream Etherscan failures (502/503), invalid user input (400), and not-found
+  addresses (404), making it impossible for the frontend to respond appropriately.
+
+CURRENT BEHAVIOR:
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+
+EXPECTED BEHAVIOR:
+  - Invalid address format → 400 Bad Request
+  - Address not found / no txns → 404 Not Found
+  - Etherscan API failure → 502 Bad Gateway
+  - Unknown internal error → 500 Internal Server Error
+
+SUGGESTED FIX:
+  Create a custom error class in backend/utils/errors.js:
+    class ApiError extends Error {
+      constructor(message, statusCode) {
+        super(message);
+        this.statusCode = statusCode;
+      }
+    }
+
+  Throw typed errors from blockchainService and routes:
+    throw new ApiError('Invalid address', 400);
+
+  Add a global error middleware in server.js:
+    app.use((err, req, res, next) => {
+      const status = err.statusCode || 500;
+      res.status(status).json({ error: err.message });
+    });
+
+
+────────────────────────────────────────────────────────────────────────────────
+ISSUE #14 — [Improvement] Add ESLint and Prettier configuration
+────────────────────────────────────────────────────────────────────────────────
+Complexity: Trivial
+File:       Root of project — new files needed
+
+DESCRIPTION:
+  The project has no linter or formatter configured. This leads to inconsistent
+  code style across files and makes code review harder. Contributors use different
+  editors with different defaults.
+
+CURRENT BEHAVIOR:
+  No .eslintrc, no .prettierrc, no lint script in package.json.
+
+EXPECTED BEHAVIOR:
+  Running `npm run lint` catches common errors and style violations.
+  Editors auto-format on save using the project's Prettier config.
+
+SUGGESTED FIX:
+  1. In frontend/:
+       npm install --save-dev eslint prettier eslint-plugin-react eslint-config-prettier
+
+  2. Create frontend/.eslintrc.json:
+       {
+         "extends": ["react-app", "prettier"],
+         "rules": {
+           "no-console": "warn",
+           "no-unused-vars": "warn"
+         }
+       }
+
+  3. Create root .prettierrc:
+       {
+         "singleQuote": true,
+         "semi": false,
+         "trailingComma": "es5",
+         "printWidth": 100
+       }
+
+  4. Add to both package.json scripts:
+       "lint": "eslint src --ext .js,.jsx",
+       "format": "prettier --write src"
+
+  5. Add a .eslintignore and .prettierignore for node_modules and build output.
+
+
+────────────────────────────────────────────────────────────────────────────────
+ISSUE #15 — [Improvement] Add loading skeleton states instead of plain text
+────────────────────────────────────────────────────────────────────────────────
+Complexity: Medium
+File:       frontend/src/components/Dashboard.jsx
+            frontend/src/components/TransactionTable.jsx
+            frontend/src/components/TokenTransfers.jsx
+
+DESCRIPTION:
+  All three pages show a plain grey "Loading chain data..." or "Fetching
+  transactions..." text while data loads. This creates a poor first impression
+  and causes large layout shifts when data arrives.
+
+CURRENT BEHAVIOR:
+  if (loading) {
+    return (
+      <div className="... animate-pulse">Loading chain data...</div>
+    );
+  }
+
+EXPECTED BEHAVIOR:
+  Placeholder skeleton cards with pulsing grey blocks matching the shape of
+  the real content (stat cards, table rows, chart area).
+
+SUGGESTED FIX:
+  Create frontend/src/components/Skeleton.jsx:
+
+    export function SkeletonCard() {
+      return (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 animate-pulse">
+          <div className="h-3 w-24 bg-gray-800 rounded mb-3" />
+          <div className="h-8 w-32 bg-gray-700 rounded" />
+        </div>
+      );
+    }
+
+    export function SkeletonRow() {
+      return (
+        <tr className="border-b border-gray-800">
+          {Array.from({ length: 7 }).map((_, i) => (
+            <td key={i} className="py-3 px-4">
+              <div className="h-3 bg-gray-800 rounded animate-pulse" style={{ width: `${60 + i * 5}%` }} />
+            </td>
+          ))}
+        </tr>
+      );
+    }
+
+  Then use these in each page's loading state instead of the plain text div.
+
+
+────────────────────────────────────────────────────────────────────────────────
+ISSUE #16 — [Feature] Add global error boundary to prevent full app crashes
+────────────────────────────────────────────────────────────────────────────────
+Complexity: Medium
+File:       frontend/src/App.jsx
+
+DESCRIPTION:
+  If any component throws an unhandled runtime error (e.g. from malformed API
+  data), the entire React tree unmounts and the user sees a blank screen with no
+  feedback. There is no React error boundary wrapping the app.
+
+CURRENT BEHAVIOR:
+  No ErrorBoundary — any runtime exception shows a white blank screen.
+
+EXPECTED BEHAVIOR:
+  An error boundary catches component failures and shows a user-friendly
+  fallback UI with a "Retry" button and the error message for debugging.
+
+SUGGESTED FIX:
+  Create frontend/src/components/ErrorBoundary.jsx:
+
+    import React from 'react';
+    export class ErrorBoundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { hasError: false, error: null };
+      }
+      static getDerivedStateFromError(error) {
+        return { hasError: true, error };
+      }
+      render() {
+        if (this.state.hasError) {
+          return (
+            <div className="p-8 text-center font-mono">
+              <p className="text-red-400 text-lg mb-2">Something went wrong</p>
+              <p className="text-gray-500 text-sm mb-4">{this.state.error?.message}</p>
+              <button onClick={() => window.location.reload()} className="...">
+                Reload
+              </button>
+            </div>
+          );
+        }
+        return this.props.children;
+      }
+    }
+
+  Wrap the router in App.jsx:
+    <ErrorBoundary>
+      <Router>...</Router>
+    </ErrorBoundary>
+
+
+────────────────────────────────────────────────────────────────────────────────
+ISSUE #17 — [Feature] Persist searched wallet address across page navigations
+────────────────────────────────────────────────────────────────────────────────
+Complexity: Medium
+File:       frontend/src/App.jsx
+            All page components
+
+DESCRIPTION:
+  When a user searches a wallet on the Wallet page and then navigates to
+  Transactions or Tokens, those pages fall back to DEFAULT_WALLET (a hardcoded
+  Binance address) instead of the wallet the user just searched. The activeWallet
+  state in App.jsx is the right idea but not fully wired up.
+
+CURRENT BEHAVIOR:
+  - User searches 0xabc... on /wallet
+  - User clicks "Transactions" tab
+  - TransactionTable.jsx uses DEFAULT_WALLET = '0xBE0eB53...'
+  - User's searched address is lost
+
+EXPECTED BEHAVIOR:
+  The searched wallet persists across all tabs until a new search is performed
+  or the user explicitly clears it.
+
+SUGGESTED FIX:
+  Option A — React Context (recommended):
+    Create frontend/src/context/WalletContext.jsx:
+      export const WalletContext = createContext(null);
+      export function WalletProvider({ children }) {
+        const [wallet, setWallet] = useState(null);
+        return (
+          <WalletContext.Provider value={{ wallet, setWallet }}>
+            {children}
+          </WalletContext.Provider>
+        );
+      }
+    Wrap App in <WalletProvider>.
+    In each page, replace DEFAULT_WALLET with: useContext(WalletContext).wallet
+
+  Option B — URL params:
+    Store the address in the URL: /transactions?address=0xabc...
+    Use useSearchParams() in React Router to read it.
+    This has the added benefit of making wallet views shareable via URL.
+
+NOTES:
+  The TODO comment in App.jsx at line ~12 flags this issue. A breadcrumb
+  or "Current wallet: 0x..." indicator in the nav header would also improve UX.
+
+
+================================================================================
+  SUMMARY TABLE
+================================================================================
+
+#   | Title (short)                                | Complexity | Type
+----|----------------------------------------------|------------|------------------
+1   | Transaction dates show 1970                  | Trivial    | Bug
+2   | All txns show as "Failed"                    | Trivial    | Bug
+3   | Gas shown in wrong unit (Wei vs Gwei)        | Trivial    | Bug
+4   | No pagination in transaction table           | Medium     | Feature
+5   | Wallet address validation too lenient        | Trivial    | Bug
+6   | CopyButton stays "Copied!" forever           | Trivial    | Bug
+7   | Silent errors in blockchainService           | Medium     | Bug
+8   | Cache TTL too short, causes rate limits      | Trivial    | Bug
+9   | Gas history chart uses random mock data      | High       | Feature
+10  | /blocks count param has no max limit         | Trivial    | Bug
+11  | Export CSV button is unimplemented           | Medium     | Feature
+12  | Bar chart clips wallets with >15k txns       | Trivial    | Bug
+13  | All API errors return 500                    | Medium     | Bug
+14  | No ESLint or Prettier config                 | Trivial    | Improvement
+15  | No skeleton loaders — plain text only        | Medium     | Improvement
+16  | No React error boundary                      | Medium     | Improvement
+17  | Wallet address lost on tab navigation        | Medium     | Feature
+
+================================================================================
+  END OF ISSUES
+================================================================================
